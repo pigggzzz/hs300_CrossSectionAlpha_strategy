@@ -1,5 +1,3 @@
-# dataset.py
-
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
@@ -7,45 +5,59 @@ import numpy as np
 
 
 def winsorize_series(x, lower=0.01, upper=0.99):
-    """对单日某个因子做极值处理"""
-    lo = np.nanpercentile(x, lower * 100)
-    hi = np.nanpercentile(x, upper * 100)
-    return np.clip(x, lo, hi)
+    """对单个横截面因子做极值处理"""
+    valid = x[~np.isnan(x)]
+    if len(valid) == 0:
+        return np.zeros_like(x)
+
+    lo = np.percentile(valid, lower * 100)
+    hi = np.percentile(valid, upper * 100)
+
+    out = np.clip(x, lo, hi)
+    # 极值处理后仍保留 NaN
+    return out
 
 
 def zscore_series(x):
-    mean = np.nanmean(x)
-    std = np.nanstd(x)
+    """横截面 zscore 标准化"""
+    valid = x[~np.isnan(x)]
+    if len(valid) == 0:
+        return np.zeros_like(x)
+
+    mean = valid.mean()
+    std = valid.std()
     if std == 0 or np.isnan(std):
         return np.zeros_like(x)
-    return (x - mean) / std
+
+    out = (x - mean) / std
+    # 统一把 NaN 替换成 0
+    out = np.where(np.isnan(out), 0.0, out)
+    return out
 
 
 class PanelDailyDataset(Dataset):
-    """
-    读取多股票面板 CSV，并对每天做横截面预处理（winsorize + zscore）
-    """
 
     def __init__(self, csv_path, feature_cols):
         df = pd.read_csv(csv_path)
+
+        # 把空字段（空字符串）全部识别成 NaN
+        df = df.replace(r'^\s*$', np.nan, regex=True)
 
         # 按日期分组
         grouped = df.groupby("date")
         self.data_list = []
 
         for date, g in grouped:
+            X = g[feature_cols].astype(float).values
 
-            # ----- 横截面预处理 -----
-            X = g[feature_cols].copy().values
-
-            # 对每一个因子按日做 winsorize + zscore
+            # 对每个因子做 winsorize + zscore
             for j in range(X.shape[1]):
                 col = X[:, j]
-                col = winsorize_series(col, 0.01, 0.99)
+                col = winsorize_series(col)
                 col = zscore_series(col)
                 X[:, j] = col
 
-            y = g["target_next_ret"].values.reshape(-1, 1)
+            y = g["target_next_ret"].astype(float).values.reshape(-1, 1)
             symbols = g["symbol"].values
 
             X = torch.tensor(X, dtype=torch.float32)
